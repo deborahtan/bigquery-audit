@@ -87,7 +87,7 @@ class SimpleRAGSystem:
                 past_context += f"- {issue.get('description', 'N/A')}: {issue.get('resolution', 'N/A')}\n"
         
         # Create prompt
-        prompt = f"""You are a GA4 BigQuery data quality expert analyzing Woolworths NZ data.
+        prompt = f"""You are a GA4 BigQuery data quality expert analyzing FreshChoice NZ data.
 
 Current Issue:
 - Type: {issue_data.get('type', 'Unknown')}
@@ -163,7 +163,7 @@ Answer the question based on the audit data above. Be specific and cite actual n
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a GA4 BigQuery audit assistant for Woolworths NZ. Answer questions about data quality based on the provided audit data."
+                        "content": "You are a GA4 BigQuery audit assistant for FreshChoice NZ. Answer questions about data quality based on the provided audit data."
                     },
                     {
                         "role": "user",
