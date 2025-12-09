@@ -11,6 +11,8 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from groq import Groq
+import json
+import tempfile
 
 # Import our modules
 from src.bigquery_connector import WoolworthsBigQueryConnector
@@ -18,19 +20,73 @@ from src.report_generator import WoolworthsReportGenerator
 from src.anomaly_detector import RetailAnomalyDetector
 from src.rag_system import SimpleRAGSystem
 
-# Load environment variables
+# Load environment variables (for local development)
 load_dotenv()
+
+# ------------------------------
+# Credentials & Config Management
+# ------------------------------
+
+def get_credentials_path():
+    """
+    Get GCP credentials - try Streamlit secrets first, then environment
+    Handles both Streamlit Cloud deployment and local development
+    """
+    # Check if running in Streamlit Cloud (has secrets)
+    if hasattr(st, 'secrets'):
+        try:
+            # If GCP_CREDENTIALS exists in Streamlit secrets, use it
+            if 'GCP_CREDENTIALS' in st.secrets:
+                # Parse JSON credentials from secrets
+                creds_dict = json.loads(st.secrets['GCP_CREDENTIALS'])
+                
+                # Create temporary file to store credentials
+                temp_creds = tempfile.NamedTemporaryFile(
+                    mode='w', 
+                    delete=False, 
+                    suffix='.json'
+                )
+                json.dump(creds_dict, temp_creds)
+                temp_creds.close()
+                
+                return temp_creds.name
+        except Exception as e:
+            # If secrets parsing fails, show warning but continue
+            st.sidebar.warning(f"Could not load Streamlit secrets: {e}")
+    
+    # Fall back to local .env file (for local development)
+    local_path = os.getenv("GCP_CREDENTIALS_PATH")
+    if local_path and os.path.exists(local_path):
+        return local_path
+    
+    # No credentials found
+    return None
+
+
+def get_config_value(key, default=""):
+    """
+    Get config value - try Streamlit secrets first, then environment
+    Supports both deployment and local development
+    """
+    # Try Streamlit secrets first (cloud deployment)
+    if hasattr(st, 'secrets') and key in st.secrets:
+        return st.secrets[key]
+    
+    # Fall back to environment variables (local development)
+    return os.getenv(key, default)
+
 
 # ------------------------------
 # Page Configuration & Styling
 # ------------------------------
+
 st.set_page_config(
     page_title="Woolworths NZ BigQuery Audit Dashboard",
     page_icon="🔍",
     layout="wide"
 )
 
-# Dentsu Styling (Your exact CSS)
+# Dentsu Styling
 st.markdown(
     """
     <style>
@@ -114,6 +170,7 @@ st.markdown(
 # ------------------------------
 # Initialize Session State
 # ------------------------------
+
 if "initialized" not in st.session_state:
     st.session_state.initialized = False
     st.session_state.bq_connector = None
@@ -126,6 +183,7 @@ if "initialized" not in st.session_state:
 # ------------------------------
 # Sidebar - Configuration & Navigation
 # ------------------------------
+
 with st.sidebar:
     st.image("https://www.dentsu.com/assets/images/main-logo-alt.png", width=160)
     
@@ -159,54 +217,58 @@ with st.sidebar:
     # Configuration
     st.subheader("⚙️ Configuration")
     
-    # Get config from environment or allow override
+    # Get config from Streamlit secrets or environment
     project_id = st.text_input(
         "GCP Project ID",
-        value=os.getenv("GCP_PROJECT_ID", "gcp-wow-food-wownz-wdl-prod"),
+        value=get_config_value("GCP_PROJECT_ID", "gcp-wow-food-wownz-wdl-prod"),
         help="Your Google Cloud Project ID"
     )
     
     dataset_id = st.text_input(
         "Dataset ID",
-        value=os.getenv("GCP_DATASET_ID", "svfc"),
+        value=get_config_value("GCP_DATASET_ID", "svfc"),
         help="BigQuery dataset name"
     )
     
     table_name = st.text_input(
         "Table Name",
-        value=os.getenv("GCP_TABLE_NAME", "ga_events"),
+        value=get_config_value("GCP_TABLE_NAME", "ga_events"),
         help="BigQuery table name"
     )
     
-    credentials_path = st.text_input(
-        "Credentials Path (optional)",
-        value=os.getenv("GCP_CREDENTIALS_PATH", ""),
-        help="Path to service account JSON file",
-        type="password"
-    )
+    # Show credential status
+    credentials_path = get_credentials_path()
+    if credentials_path:
+        st.success("✅ Credentials found")
+    else:
+        st.warning("⚠️ No credentials configured")
+        st.info("Add GCP_CREDENTIALS to Streamlit secrets or .env file")
     
     # Initialize system
     if st.button("🚀 Initialize System", use_container_width=True, type="primary"):
-        try:
-            with st.spinner("Initializing BigQuery connection..."):
-                # Initialize BigQuery connector
-                st.session_state.bq_connector = WoolworthsBigQueryConnector(
-                    project_id=project_id,
-                    dataset_id=dataset_id,
-                    table_name=table_name,
-                    credentials_path=credentials_path if credentials_path else None
-                )
-                
-                # Initialize report generator
-                st.session_state.report_generator = WoolworthsReportGenerator(
-                    st.session_state.bq_connector
-                )
-                
-                # Initialize RAG system
-                st.session_state.rag_system = SimpleRAGSystem()
-                
-                # Initialize chat history with system prompt
-                audit_context = f"""
+        if not credentials_path:
+            st.error("❌ Cannot initialize: No GCP credentials found. Please add credentials to Streamlit secrets or .env file.")
+        else:
+            try:
+                with st.spinner("Initializing BigQuery connection..."):
+                    # Initialize BigQuery connector
+                    st.session_state.bq_connector = WoolworthsBigQueryConnector(
+                        project_id=project_id,
+                        dataset_id=dataset_id,
+                        table_name=table_name,
+                        credentials_path=credentials_path
+                    )
+                    
+                    # Initialize report generator
+                    st.session_state.report_generator = WoolworthsReportGenerator(
+                        st.session_state.bq_connector
+                    )
+                    
+                    # Initialize RAG system
+                    st.session_state.rag_system = SimpleRAGSystem()
+                    
+                    # Initialize chat history with system prompt
+                    audit_context = f"""
 You are auditing BigQuery data for Woolworths NZ.
 Project: {project_id}
 Dataset: {dataset_id}
@@ -215,16 +277,17 @@ Table: {table_name}
 You help GA4 analysts understand data quality issues and provide actionable recommendations.
 Be concise, specific, and always cite actual data when available.
 """
-                st.session_state.chat_history = [
-                    {"role": "system", "content": audit_context}
-                ]
-                
-                st.session_state.initialized = True
-                st.success("✅ System initialized successfully!")
-                st.rerun()
-        
-        except Exception as e:
-            st.error(f"❌ Initialization failed: {str(e)}")
+                    st.session_state.chat_history = [
+                        {"role": "system", "content": audit_context}
+                    ]
+                    
+                    st.session_state.initialized = True
+                    st.success("✅ System initialized successfully!")
+                    st.rerun()
+            
+            except Exception as e:
+                st.error(f"❌ Initialization failed: {str(e)}")
+                st.info("Check your credentials and permissions")
     
     st.divider()
     
@@ -233,7 +296,7 @@ Be concise, specific, and always cite actual data when available.
         """
     **How to Use**
     
-    1️⃣ **Configure** - Enter your GCP project details above
+    1️⃣ **Configure** - Check your GCP project details above
     
     2️⃣ **Initialize** - Click 'Initialize System' button
     
@@ -296,8 +359,8 @@ Be concise, specific, and always cite actual data when available.
 
 # Check if system is initialized
 if not st.session_state.initialized:
-    st.title("🔍 BigQuery Audit Dashboard")
-    st.markdown("**Project:**GA4 Data Quality")
+    st.title("🔍 Woolworths NZ BigQuery Audit Dashboard")
+    st.markdown("**Project:** Woolworths NZ GA4 Data Quality")
     
     st.info("👈 Please configure and initialize the system using the sidebar to begin.")
     
@@ -326,7 +389,7 @@ if not st.session_state.initialized:
     
     ### Get Started
     
-    1. Add your GCP credentials to the sidebar
+    1. Ensure you have credentials configured (see sidebar)
     2. Click "Initialize System"
     3. Generate your first audit report!
     """)
@@ -340,6 +403,7 @@ st.markdown(f"**Project:** `{st.session_state.bq_connector.full_table_id}`")
 # ------------------------------
 # Generate Prebaked Report Section
 # ------------------------------
+
 st.markdown("---")
 st.subheader("📋 Prebaked Daily Audit Report")
 
@@ -356,6 +420,7 @@ with col2:
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Report generation failed: {str(e)}")
+                st.info("Check BigQuery permissions and table access")
 
 # Display report if available
 if st.session_state.current_report:
@@ -453,13 +518,16 @@ if st.session_state.current_report:
                 # Ask RAG for insight
                 if st.button(f"💡 Get AI Recommendation", key=f"rag_{idx}"):
                     with st.spinner("Generating recommendation..."):
-                        insight = st.session_state.rag_system.generate_insight({
-                            "type": issue['category'],
-                            "description": issue['description'],
-                            "affected": str(issue['data_preview'][:2]) if issue['data_preview'] else "N/A"
-                        })
-                        st.markdown("**AI Recommendation:**")
-                        st.info(insight)
+                        try:
+                            insight = st.session_state.rag_system.generate_insight({
+                                "type": issue['category'],
+                                "description": issue['description'],
+                                "affected": str(issue['data_preview'][:2]) if issue['data_preview'] else "N/A"
+                            })
+                            st.markdown("**AI Recommendation:**")
+                            st.info(insight)
+                        except Exception as e:
+                            st.error(f"Could not generate recommendation: {str(e)}")
     
     # Recommendations
     if report["recommendations"]:
@@ -511,19 +579,22 @@ if st.session_state.current_report:
         # Markdown export
         if st.button("📄 Export as Markdown", use_container_width=True):
             with st.spinner("Generating Markdown report..."):
-                md_path = st.session_state.report_generator.export_report_to_markdown(
-                    report,
-                    output_path=f"audit_report_{report['report_date']}.md"
-                )
-                with open(md_path, 'r') as f:
-                    md_content = f.read()
-                
-                st.download_button(
-                    label="📄 Download Markdown Report",
-                    data=md_content,
-                    file_name=f"woolworths_audit_{report['report_date']}.md",
-                    mime="text/markdown"
-                )
+                try:
+                    md_path = st.session_state.report_generator.export_report_to_markdown(
+                        report,
+                        output_path=f"audit_report_{report['report_date']}.md"
+                    )
+                    with open(md_path, 'r') as f:
+                        md_content = f.read()
+                    
+                    st.download_button(
+                        label="📄 Download Markdown Report",
+                        data=md_content,
+                        file_name=f"woolworths_audit_{report['report_date']}.md",
+                        mime="text/markdown"
+                    )
+                except Exception as e:
+                    st.error(f"Export failed: {str(e)}")
     
     with export_col2:
         # CSV export of critical issues
@@ -540,9 +611,11 @@ if st.session_state.current_report:
             )
         else:
             st.success("✅ No critical issues to export!")
+
 # ------------------------------
 # Quick Questions Section
 # ------------------------------
+
 st.markdown("---")
 st.markdown("### 💡 Quick Questions")
 
@@ -572,6 +645,7 @@ st.markdown("---")
 # ------------------------------
 # Chat Interface
 # ------------------------------
+
 st.markdown("### 💬 Ask Questions About Your Data")
 
 # Display chat history (skip system message)
@@ -619,14 +693,12 @@ if user_input:
     with st.chat_message("assistant"):
         with st.spinner("Analyzing your data..."):
             try:
-                # Initialize GROQ client
-                groq_api_key = os.getenv("GROQ_API_KEY")
-                if not groq_api_key:
-                    st.error("❌ GROQ_API_KEY not found. Please set it in your .env file.")
-                    st.stop()
+                # Get GROQ API key from config
+                groq_api_key = get_config_value("GROQ_API_KEY")
                 
-                groq_client = Groq(api_key=groq_api_key)
-                model = os.getenv("LLM_MODEL", "llama-3.1-8b-instant")
+                if not groq_api_key:
+                    st.error("❌ GROQ_API_KEY not found. Please add it to Streamlit secrets or .env file.")
+                    st.stop()
                 
                 # Prepare audit context for the question
                 audit_context = {}
@@ -659,6 +731,7 @@ if user_input:
             except Exception as e:
                 error_msg = f"❌ Error generating response: {str(e)}"
                 st.error(error_msg)
+                st.info("Check that GROQ_API_KEY is configured correctly")
                 st.session_state.chat_history.append({
                     "role": "assistant",
                     "content": error_msg
@@ -668,6 +741,6 @@ if user_input:
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #888; font-size: 12px;'>
-    Powered by Dentsu | GA4 Audit Dashboard v1.0
+    Powered by Dentsu Analytics | Woolworths NZ GA4 Audit Dashboard v1.0
 </div>
 """, unsafe_allow_html=True)
